@@ -1,0 +1,27 @@
+<!--
+  Personal Stock Portfolio — Entry Point
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page only redirects to the right starting page based on whether
+  a session already exists. All real pages are separate standalone
+  files (login.html, dashboard.html, etc.) — see those for the actual
+  application logic.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <script>
+    if (localStorage.getItem("psp_access_token")) {
+      window.location.href = "dashboard.html";
+    } else {
+      window.location.href = "login.html";
+    }
+  </script>
+</body>
+</html>

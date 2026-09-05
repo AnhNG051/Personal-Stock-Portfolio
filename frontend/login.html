@@ -1,0 +1,169 @@
+<!--
+  Personal Stock Portfolio — Sign In
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below. It does not import code from any other JavaScript
+  file — the only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <h1>Personal Stock Portfolio</h1>
+      <p class="auth-subtitle" id="subtitle">Sign in to your account</p>
+
+      <div class="form-error" id="errorBox" style="display:none;"></div>
+
+      <form id="passwordForm">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password" required />
+        </div>
+        <button class="btn btn-primary btn-block" type="submit" id="submitBtn">Sign in</button>
+      </form>
+      <p style="text-align:right;margin-top:10px;" id="forgotLinkRow">
+        <a href="forgot-password.html" style="font-size:12px;">Forgot password?</a>
+      </p>
+
+      <form id="twoFactorForm" style="display:none;">
+        <div class="field">
+          <label for="code">6-digit code</label>
+          <input id="code" inputmode="numeric" maxlength="6" required />
+        </div>
+        <button class="btn btn-primary btn-block" type="submit" id="twoFactorSubmitBtn">Verify</button>
+      </form>
+
+      <p class="auth-switch">Don't have an account? <a href="register.html">Create one</a></p>
+    </div>
+  </div>
+
+  <script>
+    // --- Configuration ------------------------------------------------
+    var API_BASE = "http://localhost:4000/api";
+
+    // --- Token storage helpers -----------------------------------------
+    function getAccessToken() {
+      return localStorage.getItem("psp_access_token");
+    }
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem("psp_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("psp_refresh_token", refreshToken);
+    }
+    function isAuthenticated() {
+      return Boolean(getAccessToken());
+    }
+
+    // If already logged in, skip straight to the dashboard.
+    if (isAuthenticated()) {
+      window.location.href = "dashboard.html";
+    }
+
+    // --- DOM references --------------------------------------------------
+    var errorBox = document.getElementById("errorBox");
+    var passwordForm = document.getElementById("passwordForm");
+    var twoFactorForm = document.getElementById("twoFactorForm");
+    var forgotLinkRow = document.getElementById("forgotLinkRow");
+    var subtitle = document.getElementById("subtitle");
+    var submitBtn = document.getElementById("submitBtn");
+    var twoFactorSubmitBtn = document.getElementById("twoFactorSubmitBtn");
+
+    var pendingTwoFactorToken = null;
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.style.display = "block";
+    }
+    function hideError() {
+      errorBox.style.display = "none";
+    }
+
+    // --- Step 1: email + password ----------------------------------------
+    passwordForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      hideError();
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Verifying…";
+
+      var email = document.getElementById("email").value;
+      var password = document.getElementById("password").value;
+
+      fetch(API_BASE + "/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email, password: password }),
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || "Sign in failed.");
+            return data;
+          });
+        })
+        .then(function (data) {
+          if (data.twoFactorRequired) {
+            pendingTwoFactorToken = data.pendingToken;
+            subtitle.textContent = "Enter your authentication code";
+            passwordForm.style.display = "none";
+            forgotLinkRow.style.display = "none";
+            twoFactorForm.style.display = "block";
+            document.getElementById("code").focus();
+          } else {
+            setTokens(data.accessToken, data.refreshToken);
+            window.location.href = "dashboard.html";
+          }
+        })
+        .catch(function (error) {
+          showError(error.message);
+        })
+        .finally(function () {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Sign in";
+        });
+    });
+
+    // --- Step 2: TOTP code (only if the account has 2FA enabled) -----------
+    twoFactorForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      hideError();
+      twoFactorSubmitBtn.disabled = true;
+      twoFactorSubmitBtn.textContent = "Checking…";
+
+      var code = document.getElementById("code").value;
+
+      fetch(API_BASE + "/auth/login/2fa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingToken: pendingTwoFactorToken, code: code }),
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || "Verification failed.");
+            return data;
+          });
+        })
+        .then(function (data) {
+          setTokens(data.accessToken, data.refreshToken);
+          window.location.href = "dashboard.html";
+        })
+        .catch(function (error) {
+          showError(error.message);
+        })
+        .finally(function () {
+          twoFactorSubmitBtn.disabled = false;
+          twoFactorSubmitBtn.textContent = "Verify";
+        });
+    });
+  </script>
+</body>
+</html>

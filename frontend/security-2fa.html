@@ -1,0 +1,191 @@
+<!--
+  Personal Stock Portfolio — Two-Factor Authentication Setup
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below. It does not import code from any other JavaScript
+  file — the only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Two-Factor Authentication — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <a href="dashboard.html">Personal Stock Portfolio</a>
+      </div>
+      <nav class="nav-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="market.html">Market</a>
+        <a href="portfolio.html">Portfolio</a>
+        <a href="watchlist.html">Watchlist</a>
+        <a href="change-password.html">Change Password</a>
+        <a href="security-2fa.html" class="active">Security</a>
+      </nav>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="session-pill"><span class="dot"></span>Encrypted session</div>
+        <button class="btn btn-secondary btn-small" id="signOutBtn">Sign out</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="section-heading"><h2>Two-factor authentication</h2></div>
+
+      <div class="panel panel-padded" id="panelContent">
+        <p style="color:var(--text-muted);margin-top:0;">
+          Add an authenticator app (Google Authenticator, 1Password, Authy) as a second factor on your account.
+        </p>
+        <div class="form-error" id="errorBox" style="display:none;"></div>
+        <button class="btn btn-primary" id="generateBtn" style="max-width:240px;">Generate QR code</button>
+      </div>
+    </main>
+
+    <div class="footer-credit">Personal Stock Portfolio — © 2026 Anh Quang Nguyen. All rights reserved.</div>
+  </div>
+
+  <script>
+    var API_BASE = "http://localhost:4000/api";
+
+    function getAccessToken() { return localStorage.getItem("psp_access_token"); }
+    function getRefreshToken() { return localStorage.getItem("psp_refresh_token"); }
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem("psp_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("psp_refresh_token", refreshToken);
+    }
+    function clearTokens() {
+      localStorage.removeItem("psp_access_token");
+      localStorage.removeItem("psp_refresh_token");
+    }
+
+    if (!getAccessToken()) {
+      window.location.href = "login.html";
+    }
+
+    function apiRequest(path, options) {
+      options = options || {};
+      var headers = { "Content-Type": "application/json" };
+      headers["Authorization"] = "Bearer " + getAccessToken();
+
+      return fetch(API_BASE + path, {
+        method: options.method || "GET",
+        headers: headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      }).then(function (response) {
+        if (response.status === 401 && options.retry !== false) {
+          return tryRefreshToken().then(function (refreshed) {
+            if (refreshed) {
+              return apiRequest(path, Object.assign({}, options, { retry: false }));
+            }
+            return response.json().then(function (data) {
+              throw new Error(data.error || "Session expired. Please sign in again.");
+            });
+          });
+        }
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+          return data;
+        });
+      });
+    }
+
+    var refreshPromise = null;
+
+    function tryRefreshToken() {
+      if (refreshPromise) return refreshPromise;
+
+      var refreshToken = getRefreshToken();
+      if (!refreshToken) return Promise.resolve(false);
+
+      refreshPromise = fetch(API_BASE + "/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: refreshToken }),
+      })
+        .then(function (response) {
+          if (!response.ok) return false;
+          return response.json().then(function (data) {
+            setTokens(data.accessToken, data.refreshToken);
+            return true;
+          });
+        })
+        .catch(function () { return false; })
+        .finally(function () { refreshPromise = null; });
+
+      return refreshPromise;
+    }
+
+    document.getElementById("signOutBtn").addEventListener("click", function () {
+      var refreshToken = getRefreshToken();
+      apiRequest("/auth/logout", { method: "POST", body: { refreshToken: refreshToken } })
+        .catch(function () {})
+        .finally(function () {
+          clearTokens();
+          window.location.href = "login.html";
+        });
+    });
+
+    // --- 2FA setup flow -------------------------------------------------------
+    var panelContent = document.getElementById("panelContent");
+    var errorBox = document.getElementById("errorBox");
+    var generateBtn = document.getElementById("generateBtn");
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.style.display = "block";
+    }
+
+    generateBtn.addEventListener("click", function () {
+      errorBox.style.display = "none";
+      apiRequest("/auth/2fa/setup", { method: "POST" })
+        .then(function (data) {
+          renderQrStep(data.qrCodeDataUrl, data.manualEntryKey);
+        })
+        .catch(function (error) {
+          showError(error.message);
+        });
+    });
+
+    function renderQrStep(qrCodeDataUrl, manualEntryKey) {
+      panelContent.innerHTML =
+        '<p style="color:var(--text-muted);margin-top:0;">Scan this code with your authenticator app, then enter the 6-digit code it generates.</p>' +
+        '<div class="qr-box"><img src="' + qrCodeDataUrl + '" alt="2FA QR code" width="180" height="180" /></div>' +
+        '<p style="font-size:12px;color:var(--text-muted);">Can\'t scan? Enter this key manually:</p>' +
+        '<div class="mono-key">' + manualEntryKey + '</div>' +
+        '<div class="form-error" id="verifyErrorBox" style="display:none;margin-top:16px;"></div>' +
+        '<form id="verifyForm" style="margin-top:16px;max-width:240px;">' +
+        '  <div class="field"><label for="code">6-digit code</label><input id="code" inputmode="numeric" maxlength="6" required /></div>' +
+        '  <button class="btn btn-primary" type="submit">Confirm and enable</button>' +
+        "</form>";
+
+      document.getElementById("verifyForm").addEventListener("submit", function (event) {
+        event.preventDefault();
+        var verifyErrorBox = document.getElementById("verifyErrorBox");
+        verifyErrorBox.style.display = "none";
+        var code = document.getElementById("code").value;
+
+        apiRequest("/auth/2fa/verify", { method: "POST", body: { code: code } })
+          .then(function () {
+            renderSuccessStep();
+          })
+          .catch(function (error) {
+            verifyErrorBox.textContent = error.message;
+            verifyErrorBox.style.display = "block";
+          });
+      });
+    }
+
+    function renderSuccessStep() {
+      panelContent.innerHTML =
+        '<p style="color:var(--accent-green);">Two-factor authentication is now enabled on your account.</p>' +
+        '<a href="dashboard.html" class="btn btn-secondary" style="display:inline-block;width:auto;text-decoration:none;">Back to dashboard</a>';
+    }
+  </script>
+</body>
+</html>

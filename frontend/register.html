@@ -1,0 +1,86 @@
+<!--
+  Personal Stock Portfolio — Create Account
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below. It does not import code from any other JavaScript
+  file — the only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create Account — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <h1>Create account</h1>
+      <p class="auth-subtitle">Passwords are hashed with bcrypt, never stored in plain text.</p>
+
+      <div class="form-error" id="errorBox" style="display:none;"></div>
+
+      <form id="registerForm">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label for="password">Password (min 10 characters)</label>
+          <input id="password" type="password" autocomplete="new-password" minlength="10" required />
+        </div>
+        <button class="btn btn-primary btn-block" type="submit" id="submitBtn">Create account</button>
+      </form>
+
+      <p class="auth-switch">Already have an account? <a href="login.html">Sign in</a></p>
+    </div>
+  </div>
+
+  <script>
+    var API_BASE = "http://localhost:4000/api";
+
+    if (localStorage.getItem("psp_access_token")) {
+      window.location.href = "dashboard.html";
+    }
+
+    var errorBox = document.getElementById("errorBox");
+    var registerForm = document.getElementById("registerForm");
+    var submitBtn = document.getElementById("submitBtn");
+
+    registerForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      errorBox.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Creating…";
+
+      var email = document.getElementById("email").value;
+      var password = document.getElementById("password").value;
+
+      fetch(API_BASE + "/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email, password: password }),
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || "Registration failed.");
+            return data;
+          });
+        })
+        .then(function () {
+          window.location.href = "login.html";
+        })
+        .catch(function (error) {
+          errorBox.textContent = error.message;
+          errorBox.style.display = "block";
+        })
+        .finally(function () {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Create account";
+        });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,516 @@
+<!--
+  Personal Stock Portfolio — Portfolio Holdings
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below. It does not import code from any other JavaScript
+  file — the only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Portfolio — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <a href="dashboard.html">Personal Stock Portfolio</a>
+      </div>
+      <nav class="nav-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="market.html">Market</a>
+        <a href="portfolio.html" class="active">Portfolio</a>
+        <a href="watchlist.html">Watchlist</a>
+        <a href="change-password.html">Change Password</a>
+        <a href="security-2fa.html">Security</a>
+      </nav>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="session-pill"><span class="dot"></span>Encrypted session</div>
+        <button class="btn btn-secondary btn-small" id="signOutBtn">Sign out</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="section-heading">
+        <h2>Portfolio</h2>
+        <div style="display:flex;align-items:center;gap:16px;">
+          <span id="totalValueLabel" style="font-family:var(--font-mono);font-size:13px;color:var(--text-muted);"></span>
+          <button class="btn btn-secondary btn-small" id="exportBtn">Export to Excel</button>
+        </div>
+      </div>
+
+      <div class="form-error" id="pageErrorBox" style="display:none;"></div>
+      <div class="form-error" id="exportErrorBox" style="display:none;margin-bottom:14px;"></div>
+
+      <div class="panel" id="holdingsPanel">
+        <div class="empty-state">Loading…</div>
+      </div>
+
+      <div class="panel panel-padded" id="notePanel" style="display:none;">
+        <div class="section-heading" style="margin-bottom:16px;">
+          <h2 id="noteTicker"></h2>
+          <button class="btn btn-secondary btn-small" id="closeNoteBtn">Close</button>
+        </div>
+        <div class="form-error" id="noteErrorBox" style="display:none;"></div>
+        <div class="form-success" id="noteSuccessBox" style="display:none;"></div>
+        <form id="noteForm">
+          <div class="field">
+            <label for="noteInterestReason">Why I'm interested</label>
+            <textarea id="noteInterestReason" maxlength="2000"></textarea>
+          </div>
+          <div class="field">
+            <label for="noteWhatILike">What I like</label>
+            <textarea id="noteWhatILike" maxlength="2000"></textarea>
+          </div>
+          <div class="field">
+            <label for="noteRisks">Risks</label>
+            <textarea id="noteRisks" maxlength="2000"></textarea>
+          </div>
+          <div class="field">
+            <label for="noteThesis">My thesis</label>
+            <textarea id="noteThesis" maxlength="2000"></textarea>
+          </div>
+          <div class="field">
+            <label for="notePersonalNotes">Personal notes</label>
+            <textarea id="notePersonalNotes" maxlength="2000"></textarea>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <button class="btn btn-primary btn-small" type="submit" id="noteSaveBtn">Save note</button>
+            <button class="btn btn-secondary btn-small" type="button" id="noteDeleteBtn" style="display:none;">Delete note</button>
+            <span id="noteUpdatedText" style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="section-heading"><h2>Audit log</h2></div>
+      <div class="panel" id="auditPanel"></div>
+    </main>
+
+    <div class="footer-credit">Personal Stock Portfolio — © 2026 Anh Quang Nguyen. All rights reserved.</div>
+  </div>
+
+  <script>
+    var API_BASE = "http://localhost:4000/api";
+
+    // --- Token + auth helpers (duplicated per page by design) -------------
+    function getAccessToken() { return localStorage.getItem("psp_access_token"); }
+    function getRefreshToken() { return localStorage.getItem("psp_refresh_token"); }
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem("psp_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("psp_refresh_token", refreshToken);
+    }
+    function clearTokens() {
+      localStorage.removeItem("psp_access_token");
+      localStorage.removeItem("psp_refresh_token");
+    }
+
+    if (!getAccessToken()) {
+      window.location.href = "login.html";
+    }
+
+    function apiRequest(path, options) {
+      options = options || {};
+      var headers = { "Content-Type": "application/json" };
+      headers["Authorization"] = "Bearer " + getAccessToken();
+
+      return fetch(API_BASE + path, {
+        method: options.method || "GET",
+        headers: headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      }).then(function (response) {
+        if (response.status === 401 && options.retry !== false) {
+          return tryRefreshToken().then(function (refreshed) {
+            if (refreshed) {
+              return apiRequest(path, Object.assign({}, options, { retry: false }));
+            }
+            return response.json().then(function (data) {
+              throw new Error(data.error || "Session expired. Please sign in again.");
+            });
+          });
+        }
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+          return data;
+        });
+      });
+    }
+
+    var refreshPromise = null;
+
+    function tryRefreshToken() {
+      if (refreshPromise) return refreshPromise;
+
+      var refreshToken = getRefreshToken();
+      if (!refreshToken) return Promise.resolve(false);
+
+      refreshPromise = fetch(API_BASE + "/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: refreshToken }),
+      })
+        .then(function (response) {
+          if (!response.ok) return false;
+          return response.json().then(function (data) {
+            setTokens(data.accessToken, data.refreshToken);
+            return true;
+          });
+        })
+        .catch(function () { return false; })
+        .finally(function () { refreshPromise = null; });
+
+      return refreshPromise;
+    }
+
+    document.getElementById("signOutBtn").addEventListener("click", function () {
+      var refreshToken = getRefreshToken();
+      apiRequest("/auth/logout", { method: "POST", body: { refreshToken: refreshToken } })
+        .catch(function () {})
+        .finally(function () {
+          clearTokens();
+          window.location.href = "login.html";
+        });
+    });
+
+    // --- Page state -----------------------------------------------------------
+    var holdings = [];
+    var holdingsPanel = document.getElementById("holdingsPanel");
+    var auditPanel = document.getElementById("auditPanel");
+    var totalValueLabel = document.getElementById("totalValueLabel");
+    var pageErrorBox = document.getElementById("pageErrorBox");
+
+    function updateTotalLabel() {
+      var total = 0;
+      for (var i = 0; i < holdings.length; i++) {
+        total += holdings[i].shares * holdings[i].costBasis;
+      }
+      totalValueLabel.innerHTML =
+        "Total cost basis: <strong style=\"color:var(--text-primary);\">$" + total.toFixed(2) + "</strong>";
+    }
+
+    function renderHoldingsTable() {
+      if (holdings.length === 0) {
+        holdingsPanel.innerHTML = '<div class="empty-state">No holdings yet. Add your first position below.</div>';
+      } else {
+        var rowsHtml = "";
+        for (var i = 0; i < holdings.length; i++) {
+          var h = holdings[i];
+          var positionValue = (h.shares * h.costBasis).toFixed(2);
+          rowsHtml +=
+            "<tr>" +
+            '<td class="ticker">' + h.ticker + "</td>" +
+            "<td>" + h.shares + "</td>" +
+            "<td>$" + h.costBasis.toFixed(2) + "</td>" +
+            "<td>$" + positionValue + "</td>" +
+            '<td>' +
+            '<button class="remove-btn" data-ticker="' + h.ticker + '" data-action="notes">Notes</button> ' +
+            '<button class="remove-btn" data-id="' + h.id + '">Remove</button>' +
+            "</td>" +
+            "</tr>";
+        }
+
+        holdingsPanel.innerHTML =
+          "<table>" +
+          "<thead><tr><th>Ticker</th><th>Shares</th><th>Cost basis</th><th>Position value</th><th></th></tr></thead>" +
+          "<tbody>" + rowsHtml + "</tbody>" +
+          "</table>";
+      }
+
+      var noteButtons = holdingsPanel.querySelectorAll('[data-action="notes"]');
+      for (var n = 0; n < noteButtons.length; n++) {
+        noteButtons[n].addEventListener("click", function (event) {
+          openNotePanel(event.target.getAttribute("data-ticker"));
+        });
+      }
+
+      holdingsPanel.innerHTML +=
+        '<div class="form-error" id="addFormError" style="display:none;margin:0 16px 16px;"></div>' +
+        '<form id="addHoldingForm" style="padding:16px;border-top:1px solid var(--border);">' +
+        '  <div class="add-form" style="padding:0;border-top:none;">' +
+        '    <input placeholder="TICKER" id="newTicker" required />' +
+        '    <input placeholder="Shares" type="number" step="any" min="0" id="newShares" required />' +
+        '    <input placeholder="Cost basis ($)" type="number" step="any" min="0" id="newCostBasis" required />' +
+        '    <button type="submit">Add holding</button>' +
+        "  </div>" +
+        '  <div style="margin-top:12px;">' +
+        '    <label style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+        '      <input type="checkbox" id="includeNoteToggle" /> Add investment note for this ticker' +
+        "    </label>" +
+        '    <div id="noteFields" style="display:none;margin-top:10px;">' +
+        '      <div class="field"><label>Why I\'m interested</label><textarea id="newInterestReason" maxlength="2000"></textarea></div>' +
+        '      <div class="field"><label>What I like</label><textarea id="newWhatILike" maxlength="2000"></textarea></div>' +
+        '      <div class="field"><label>Risks</label><textarea id="newRisks" maxlength="2000"></textarea></div>' +
+        '      <div class="field"><label>My thesis</label><textarea id="newThesis" maxlength="2000"></textarea></div>' +
+        '      <div class="field"><label>Personal notes</label><textarea id="newPersonalNotes" maxlength="2000"></textarea></div>' +
+        "    </div>" +
+        "  </div>" +
+        "</form>";
+
+      var noteButtons = holdingsPanel.querySelectorAll('[data-action="notes"]');
+      for (var n = 0; n < noteButtons.length; n++) {
+        noteButtons[n].addEventListener("click", function (event) {
+          openNotePanel(event.target.getAttribute("data-ticker"));
+        });
+      }
+
+      var removeButtons = holdingsPanel.querySelectorAll(".remove-btn");
+      for (var j = 0; j < removeButtons.length; j++) {
+        removeButtons[j].addEventListener("click", function (event) {
+          var holdingId = event.target.getAttribute("data-id");
+          apiRequest("/holdings/" + holdingId, { method: "DELETE" })
+            .then(function () {
+              return loadHoldings();
+            })
+            .then(function () {
+              return loadAuditLog();
+            })
+            .catch(function (error) {
+              pageErrorBox.textContent = error.message;
+              pageErrorBox.style.display = "block";
+            });
+        });
+      }
+
+      document.getElementById("includeNoteToggle").addEventListener("change", function (event) {
+        document.getElementById("noteFields").style.display = event.target.checked ? "block" : "none";
+      });
+
+      document.getElementById("addHoldingForm").addEventListener("submit", function (event) {
+        event.preventDefault();
+        var addFormError = document.getElementById("addFormError");
+        addFormError.style.display = "none";
+
+        var ticker = document.getElementById("newTicker").value.toUpperCase();
+        var shares = Number(document.getElementById("newShares").value);
+        var costBasis = Number(document.getElementById("newCostBasis").value);
+        var includeNote = document.getElementById("includeNoteToggle").checked;
+
+        apiRequest("/holdings", { method: "POST", body: { ticker: ticker, shares: shares, costBasis: costBasis } })
+          .then(function () {
+            if (!includeNote) return null;
+            return apiRequest("/notes/" + ticker, {
+              method: "PUT",
+              body: {
+                interestReason: document.getElementById("newInterestReason").value,
+                whatILike: document.getElementById("newWhatILike").value,
+                risks: document.getElementById("newRisks").value,
+                thesis: document.getElementById("newThesis").value,
+                personalNotes: document.getElementById("newPersonalNotes").value,
+              },
+            });
+          })
+          .then(function () {
+            return loadHoldings();
+          })
+          .then(function () {
+            return loadAuditLog();
+          })
+          .catch(function (error) {
+            addFormError.textContent = error.message;
+            addFormError.style.display = "block";
+          });
+      });
+    }
+
+    function loadHoldings() {
+      return apiRequest("/holdings").then(function (data) {
+        holdings = data;
+        renderHoldingsTable();
+        updateTotalLabel();
+      });
+    }
+
+    var EVENT_STYLE = {
+      LOGIN_SUCCESS: "success",
+      LOGIN_SUCCESS_2FA: "success",
+      REGISTER_SUCCESS: "success",
+      "2FA_ENABLED": "success",
+      HOLDING_CREATED: "success",
+      HOLDINGS_EXPORTED: "success",
+      LOGIN_FAILED: "failed",
+      LOGIN_2FA_FAILED: "failed",
+      CHANGE_PASSWORD_FAILED: "failed",
+      REGISTER_DUPLICATE_ATTEMPT: "failed",
+      HOLDING_DELETED: "info",
+      HOLDING_UPDATED: "info",
+      LOGOUT: "info",
+    };
+
+    function formatLogTime(iso) {
+      return new Date(iso).toLocaleString(undefined, {
+        month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+      });
+    }
+
+    function loadAuditLog() {
+      return apiRequest("/audit").then(function (events) {
+        if (events.length === 0) {
+          auditPanel.innerHTML = '<div class="empty-state">No activity recorded yet.</div>';
+          return;
+        }
+
+        var rowsHtml = "";
+        for (var i = 0; i < events.length; i++) {
+          var e = events[i];
+          var metaParts = [];
+          if (e.ip_address) metaParts.push("from " + e.ip_address);
+          if (e.metadata && Object.keys(e.metadata).length > 0) metaParts.push(JSON.stringify(e.metadata));
+
+          var styleClass = EVENT_STYLE[e.event_type] || "info";
+          rowsHtml +=
+            '<div class="log-row">' +
+            '<span class="log-time">' + formatLogTime(e.created_at) + "</span>" +
+            '<span class="log-event ' + styleClass + '">' + e.event_type + "</span>" +
+            '<span class="log-meta">' + metaParts.join(" · ") + "</span>" +
+            "</div>";
+        }
+
+        auditPanel.innerHTML = '<div class="log-feed">' + rowsHtml + "</div>";
+      });
+    }
+
+    // --- Export to Excel ---------------------------------------------------
+    var exportBtn = document.getElementById("exportBtn");
+    var exportErrorBox = document.getElementById("exportErrorBox");
+
+    exportBtn.addEventListener("click", function () {
+      exportErrorBox.style.display = "none";
+      exportBtn.disabled = true;
+      exportBtn.textContent = "Exporting…";
+
+      fetch(API_BASE + "/holdings/export", {
+        headers: { Authorization: "Bearer " + getAccessToken() },
+      })
+        .then(function (response) {
+          if (!response.ok) {
+            return response.json().catch(function () { return {}; }).then(function (data) {
+              throw new Error(data.error || "Export failed.");
+            });
+          }
+          return response.blob();
+        })
+        .then(function (blob) {
+          var url = URL.createObjectURL(blob);
+          var link = document.createElement("a");
+          link.href = url;
+          link.download = "personal-stock-portfolio.xlsx";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+        })
+        .catch(function (error) {
+          exportErrorBox.textContent = error.message;
+          exportErrorBox.style.display = "block";
+        })
+        .finally(function () {
+          exportBtn.disabled = false;
+          exportBtn.textContent = "Export to Excel";
+        });
+    });
+
+    var notePanel = document.getElementById("notePanel");
+    var currentNoteTicker = null;
+
+    function openNotePanel(ticker) {
+      currentNoteTicker = ticker;
+      document.getElementById("noteTicker").textContent = "Notes — " + ticker;
+      document.getElementById("noteErrorBox").style.display = "none";
+      document.getElementById("noteSuccessBox").style.display = "none";
+      notePanel.style.display = "block";
+      notePanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+      apiRequest("/notes/" + ticker)
+        .then(function (note) {
+          document.getElementById("noteInterestReason").value = note.interestReason;
+          document.getElementById("noteWhatILike").value = note.whatILike;
+          document.getElementById("noteRisks").value = note.risks;
+          document.getElementById("noteThesis").value = note.thesis;
+          document.getElementById("notePersonalNotes").value = note.personalNotes;
+
+          var deleteBtn = document.getElementById("noteDeleteBtn");
+          var updatedText = document.getElementById("noteUpdatedText");
+          if (note.updatedAt) {
+            updatedText.textContent = "Last updated " + new Date(note.updatedAt).toLocaleString();
+            deleteBtn.style.display = "inline-block";
+          } else {
+            updatedText.textContent = "Not saved yet";
+            deleteBtn.style.display = "none";
+          }
+        })
+        .catch(function (error) {
+          document.getElementById("noteErrorBox").textContent = error.message;
+          document.getElementById("noteErrorBox").style.display = "block";
+        });
+    }
+
+    document.getElementById("closeNoteBtn").addEventListener("click", function () {
+      notePanel.style.display = "none";
+      currentNoteTicker = null;
+    });
+
+    document.getElementById("noteForm").addEventListener("submit", function (event) {
+      event.preventDefault();
+      var saveBtn = document.getElementById("noteSaveBtn");
+      var successBox = document.getElementById("noteSuccessBox");
+      successBox.style.display = "none";
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+
+      var body = {
+        interestReason: document.getElementById("noteInterestReason").value,
+        whatILike: document.getElementById("noteWhatILike").value,
+        risks: document.getElementById("noteRisks").value,
+        thesis: document.getElementById("noteThesis").value,
+        personalNotes: document.getElementById("notePersonalNotes").value,
+      };
+
+      apiRequest("/notes/" + currentNoteTicker, { method: "PUT", body: body })
+        .then(function (note) {
+          successBox.textContent = "Saved.";
+          successBox.style.display = "block";
+          document.getElementById("noteUpdatedText").textContent =
+            "Last updated " + new Date(note.updatedAt).toLocaleString();
+          document.getElementById("noteDeleteBtn").style.display = "inline-block";
+        })
+        .catch(function (error) {
+          document.getElementById("noteErrorBox").textContent = error.message;
+          document.getElementById("noteErrorBox").style.display = "block";
+        })
+        .finally(function () {
+          saveBtn.disabled = false;
+          saveBtn.textContent = "Save note";
+        });
+    });
+
+    document.getElementById("noteDeleteBtn").addEventListener("click", function () {
+      if (!window.confirm("Delete your note for " + currentNoteTicker + "? This can't be undone.")) return;
+
+      apiRequest("/notes/" + currentNoteTicker, { method: "DELETE" })
+        .then(function () {
+          notePanel.style.display = "none";
+          currentNoteTicker = null;
+        })
+        .catch(function (error) {
+          document.getElementById("noteErrorBox").textContent = error.message;
+          document.getElementById("noteErrorBox").style.display = "block";
+        });
+    });
+
+    var noteFromUrl = new URLSearchParams(window.location.search).get("note");
+    if (noteFromUrl) openNotePanel(noteFromUrl.toUpperCase());
+
+    // --- Initial load -----------------------------------------------------------
+    loadHoldings()
+      .then(function () { return loadAuditLog(); })
+      .catch(function (error) {
+        pageErrorBox.textContent = error.message;
+        pageErrorBox.style.display = "block";
+      });
+  </script>
+</body>
+</html>

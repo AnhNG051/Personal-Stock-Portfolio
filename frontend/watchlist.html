@@ -1,0 +1,277 @@
+<!--
+  Personal Stock Portfolio — Watchlist
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below. It does not import code from any other JavaScript
+  file — the only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Watchlist — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <a href="dashboard.html">Personal Stock Portfolio</a>
+      </div>
+      <nav class="nav-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="market.html">Market</a>
+        <a href="portfolio.html">Portfolio</a>
+        <a href="watchlist.html" class="active">Watchlist</a>
+        <a href="change-password.html">Change Password</a>
+        <a href="security-2fa.html">Security</a>
+      </nav>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="session-pill"><span class="dot"></span>Encrypted session</div>
+        <button class="btn btn-secondary btn-small" id="signOutBtn">Sign out</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="section-heading">
+        <h2>Watchlist</h2>
+        <span id="lastUpdatedLabel" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);"></span>
+      </div>
+
+      <div class="form-error" id="pageErrorBox" style="display:none;"></div>
+
+      <div class="panel" id="watchlistPanel">
+        <div class="empty-state">Loading…</div>
+      </div>
+
+      <div class="panel" id="addTickerPanel" style="display:none;">
+        <div class="form-error" id="addFormError" style="display:none;margin:16px 16px 0;"></div>
+        <form class="add-form" id="addTickerForm">
+          <input placeholder="TICKER (e.g. NVDA)" id="newTicker" required />
+          <button type="submit">Add to watchlist</button>
+        </form>
+      </div>
+    </main>
+
+    <div class="footer-credit">Personal Stock Portfolio — © 2026 Anh Quang Nguyen. All rights reserved.</div>
+  </div>
+
+  <script>
+    var API_BASE = "http://localhost:4000/api";
+
+    function getAccessToken() { return localStorage.getItem("psp_access_token"); }
+    function getRefreshToken() { return localStorage.getItem("psp_refresh_token"); }
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem("psp_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("psp_refresh_token", refreshToken);
+    }
+    function clearTokens() {
+      localStorage.removeItem("psp_access_token");
+      localStorage.removeItem("psp_refresh_token");
+    }
+
+    if (!getAccessToken()) {
+      window.location.href = "login.html";
+    }
+
+    function apiRequest(path, options) {
+      options = options || {};
+      var headers = { "Content-Type": "application/json" };
+      headers["Authorization"] = "Bearer " + getAccessToken();
+
+      return fetch(API_BASE + path, {
+        method: options.method || "GET",
+        headers: headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      }).then(function (response) {
+        if (response.status === 401 && options.retry !== false) {
+          return tryRefreshToken().then(function (refreshed) {
+            if (refreshed) {
+              return apiRequest(path, Object.assign({}, options, { retry: false }));
+            }
+            return response.json().then(function (data) {
+              throw new Error(data.error || "Session expired. Please sign in again.");
+            });
+          });
+        }
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+          return data;
+        });
+      });
+    }
+
+    var refreshPromise = null;
+
+    function tryRefreshToken() {
+      if (refreshPromise) return refreshPromise;
+
+      var refreshToken = getRefreshToken();
+      if (!refreshToken) return Promise.resolve(false);
+
+      refreshPromise = fetch(API_BASE + "/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: refreshToken }),
+      })
+        .then(function (response) {
+          if (!response.ok) return false;
+          return response.json().then(function (data) {
+            setTokens(data.accessToken, data.refreshToken);
+            return true;
+          });
+        })
+        .catch(function () { return false; })
+        .finally(function () { refreshPromise = null; });
+
+      return refreshPromise;
+    }
+
+    document.getElementById("signOutBtn").addEventListener("click", function () {
+      var refreshToken = getRefreshToken();
+      apiRequest("/auth/logout", { method: "POST", body: { refreshToken: refreshToken } })
+        .catch(function () {})
+        .finally(function () {
+          clearTokens();
+          window.location.href = "login.html";
+        });
+    });
+
+    // --- Page state -----------------------------------------------------------
+    var watchlistPanel = document.getElementById("watchlistPanel");
+    var pageErrorBox = document.getElementById("pageErrorBox");
+
+    function formatChange(quote) {
+      if (!quote || quote.error) {
+        return { priceText: "—", changeText: "unavailable", cssClass: "price-flat" };
+      }
+      var cssClass = "price-flat";
+      if (quote.change > 0) cssClass = "price-up";
+      else if (quote.change < 0) cssClass = "price-down";
+
+      var sign = quote.change > 0 ? "+" : "";
+      var changeText = sign + quote.change.toFixed(2) + " (" + sign + quote.percentChange.toFixed(2) + "%)";
+      return { priceText: "$" + quote.currentPrice.toFixed(2), changeText: changeText, cssClass: cssClass };
+    }
+
+    function renderTable(items) {
+      if (items.length === 0) {
+        watchlistPanel.innerHTML = '<div class="empty-state">Your watchlist is empty. Add a ticker below to start following it.</div>';
+      } else {
+        var rowsHtml = "";
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var display = formatChange(item.quote);
+          rowsHtml +=
+            "<tr>" +
+            '<td><a class="ticker" href="stock.html?symbol=' + item.ticker + '">' + item.ticker + "</a></td>" +
+            "<td>" + display.priceText + "</td>" +
+            '<td class="' + display.cssClass + '">' + display.changeText + "</td>" +
+            '<td><button class="remove-btn" data-ticker="' + item.ticker + '">Remove</button></td>' +
+            "</tr>";
+        }
+
+        watchlistPanel.innerHTML =
+          "<table>" +
+          "<thead><tr><th>Ticker</th><th>Price</th><th>Daily change</th><th></th></tr></thead>" +
+          "<tbody>" + rowsHtml + "</tbody>" +
+          "</table>";
+      }
+
+      var removeButtons = watchlistPanel.querySelectorAll(".remove-btn");
+      for (var j = 0; j < removeButtons.length; j++) {
+        removeButtons[j].addEventListener("click", function (event) {
+          var ticker = event.target.getAttribute("data-ticker");
+          apiRequest("/watchlist/" + ticker, { method: "DELETE" })
+            .then(function () { return loadWatchlist(); })
+            .catch(function (error) {
+              pageErrorBox.textContent = error.message;
+              pageErrorBox.style.display = "block";
+            });
+        });
+      }
+
+      // The add-ticker form lives in its own panel outside watchlistPanel,
+      // so re-rendering the price table on every auto-refresh never wipes
+      // out whatever the user is currently typing into it.
+      document.getElementById("addTickerPanel").style.display = "block";
+    }
+
+    // The add-ticker form's submit handler only needs to be bound once —
+    // it's never re-created by a table refresh.
+    document.getElementById("addTickerForm").addEventListener("submit", function (event) {
+      event.preventDefault();
+      var addFormError = document.getElementById("addFormError");
+      addFormError.style.display = "none";
+
+      var tickerInput = document.getElementById("newTicker");
+      var ticker = tickerInput.value.toUpperCase();
+
+      apiRequest("/watchlist", { method: "POST", body: { ticker: ticker } })
+        .then(function () {
+          tickerInput.value = "";
+          return loadWatchlist();
+        })
+        .catch(function (error) {
+          addFormError.textContent = error.message;
+          addFormError.style.display = "block";
+        });
+    });
+
+    // Loads the ticker list, then fetches a live quote for each one.
+    // Quote lookups run in parallel and are tolerant of individual failures
+    // (e.g. an invalid ticker, or no API key configured) so one bad quote
+    // doesn't block the rest of the table from rendering.
+    function loadWatchlist() {
+      return apiRequest("/watchlist").then(function (items) {
+        var quotePromises = items.map(function (item) {
+          return apiRequest("/stocks/quote/" + item.ticker)
+            .then(function (quote) { return quote; })
+            .catch(function (error) { return { error: error.message }; });
+        });
+
+        return Promise.all(quotePromises).then(function (quotes) {
+          var merged = items.map(function (item, index) {
+            return { ticker: item.ticker, addedAt: item.addedAt, quote: quotes[index] };
+          });
+          renderTable(merged);
+          document.getElementById("lastUpdatedLabel").textContent = "Updated " + new Date().toLocaleTimeString();
+        });
+      });
+    }
+
+    loadWatchlist().catch(function (error) {
+      pageErrorBox.textContent = error.message;
+      pageErrorBox.style.display = "block";
+    });
+
+    // --- Auto-refresh every 20 seconds, so prices stay genuinely live -----------
+    var REFRESH_INTERVAL_MS = 20000;
+    var refreshTimer = setInterval(function () {
+      loadWatchlist().catch(function (error) {
+        pageErrorBox.textContent = error.message;
+        pageErrorBox.style.display = "block";
+      });
+    }, REFRESH_INTERVAL_MS);
+
+    // Pause polling on a hidden tab, resume (and refresh immediately) when
+    // it becomes visible again — avoids burning API quota in the background.
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        clearInterval(refreshTimer);
+      } else {
+        loadWatchlist();
+        refreshTimer = setInterval(function () {
+          loadWatchlist().catch(function (error) {
+            pageErrorBox.textContent = error.message;
+            pageErrorBox.style.display = "block";
+          });
+        }, REFRESH_INTERVAL_MS);
+      }
+    });
+  </script>
+</body>
+</html>

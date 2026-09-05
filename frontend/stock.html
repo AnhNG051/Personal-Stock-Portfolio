@@ -1,0 +1,397 @@
+<!--
+  Personal Stock Portfolio — Stock Detail
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below, including the price chart, which is drawn directly
+  onto a <canvas> element by hand rather than pulling in a charting
+  library. It does not import code from any other JavaScript file — the
+  only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <a href="dashboard.html">Personal Stock Portfolio</a>
+      </div>
+      <nav class="nav-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="market.html">Market</a>
+        <a href="portfolio.html">Portfolio</a>
+        <a href="watchlist.html">Watchlist</a>
+        <a href="change-password.html">Change Password</a>
+        <a href="security-2fa.html">Security</a>
+      </nav>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="session-pill"><span class="dot"></span>Encrypted session</div>
+        <button class="btn btn-secondary btn-small" id="signOutBtn">Sign out</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="form-error" id="pageErrorBox" style="display:none;"></div>
+
+      <div id="stockContent" style="display:none;">
+        <div class="stock-header">
+          <img id="companyLogo" class="stock-logo" alt="" style="display:none;" />
+          <div class="stock-header-text">
+            <h1 id="tickerHeading"></h1>
+            <div class="company-name" id="companyNameText"></div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:10px;">
+            <button class="btn btn-secondary btn-small" id="watchlistToggleBtn">Add to watchlist</button>
+            <a class="btn btn-secondary btn-small" id="notesLink" style="text-decoration:none;">View notes</a>
+          </div>
+        </div>
+
+        <div class="price-hero">
+          <span class="price" id="priceText"></span>
+          <span class="change" id="changeText"></span>
+        </div>
+
+        <div class="chart-container">
+          <div class="chart-range-buttons">
+            <button data-days="7">7D</button>
+            <button data-days="30" class="active">30D</button>
+            <button data-days="90">90D</button>
+            <button data-days="180">180D</button>
+            <button data-days="365">1Y</button>
+          </div>
+          <div id="chartMessage" class="empty-state" style="display:none;"></div>
+          <canvas id="priceChart" width="900" height="260"></canvas>
+        </div>
+
+        <div class="section-heading"><h2>Company information</h2></div>
+        <div class="panel panel-padded">
+          <div class="info-grid">
+            <div class="info-item">
+              <div class="info-label">Industry</div>
+              <div class="info-value" id="infoIndustry">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Exchange</div>
+              <div class="info-value" id="infoExchange">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Market cap</div>
+              <div class="info-value" id="infoMarketCap">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Currency</div>
+              <div class="info-value" id="infoCurrency">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">IPO date</div>
+              <div class="info-value" id="infoIpoDate">—</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Website</div>
+              <div class="info-value" id="infoWebsite">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div class="footer-credit">Personal Stock Portfolio — © 2026 Anh Quang Nguyen. All rights reserved.</div>
+  </div>
+
+  <script>
+    var API_BASE = "http://localhost:4000/api";
+
+    function getAccessToken() { return localStorage.getItem("psp_access_token"); }
+    function getRefreshToken() { return localStorage.getItem("psp_refresh_token"); }
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem("psp_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("psp_refresh_token", refreshToken);
+    }
+    function clearTokens() {
+      localStorage.removeItem("psp_access_token");
+      localStorage.removeItem("psp_refresh_token");
+    }
+
+    if (!getAccessToken()) {
+      window.location.href = "login.html";
+    }
+
+    function apiRequest(path, options) {
+      options = options || {};
+      var headers = { "Content-Type": "application/json" };
+      headers["Authorization"] = "Bearer " + getAccessToken();
+
+      return fetch(API_BASE + path, {
+        method: options.method || "GET",
+        headers: headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      }).then(function (response) {
+        if (response.status === 401 && options.retry !== false) {
+          return tryRefreshToken().then(function (refreshed) {
+            if (refreshed) {
+              return apiRequest(path, Object.assign({}, options, { retry: false }));
+            }
+            return response.json().then(function (data) {
+              throw new Error(data.error || "Session expired. Please sign in again.");
+            });
+          });
+        }
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+          return data;
+        });
+      });
+    }
+
+    var refreshPromise = null;
+
+    function tryRefreshToken() {
+      if (refreshPromise) return refreshPromise;
+
+      var refreshToken = getRefreshToken();
+      if (!refreshToken) return Promise.resolve(false);
+
+      refreshPromise = fetch(API_BASE + "/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: refreshToken }),
+      })
+        .then(function (response) {
+          if (!response.ok) return false;
+          return response.json().then(function (data) {
+            setTokens(data.accessToken, data.refreshToken);
+            return true;
+          });
+        })
+        .catch(function () { return false; })
+        .finally(function () { refreshPromise = null; });
+
+      return refreshPromise;
+    }
+
+    document.getElementById("signOutBtn").addEventListener("click", function () {
+      var refreshToken = getRefreshToken();
+      apiRequest("/auth/logout", { method: "POST", body: { refreshToken: refreshToken } })
+        .catch(function () {})
+        .finally(function () {
+          clearTokens();
+          window.location.href = "login.html";
+        });
+    });
+
+    // --- Read the ticker from the URL ------------------------------------------
+    function getSymbolFromUrl() {
+      var params = new URLSearchParams(window.location.search);
+      return (params.get("symbol") || "").toUpperCase();
+    }
+
+    var symbol = getSymbolFromUrl();
+    var pageErrorBox = document.getElementById("pageErrorBox");
+
+    if (!symbol) {
+      pageErrorBox.textContent = "No ticker specified. Go to your watchlist or portfolio and click a ticker to view it here.";
+      pageErrorBox.style.display = "block";
+    } else {
+      document.getElementById("notesLink").href = "portfolio.html?note=" + symbol;
+      loadEverything();
+    }
+
+    function loadEverything() {
+      document.getElementById("tickerHeading").textContent = symbol;
+
+      Promise.all([
+        apiRequest("/stocks/quote/" + symbol),
+        apiRequest("/stocks/profile/" + symbol).catch(function () { return null; }),
+        apiRequest("/watchlist"),
+      ])
+        .then(function (results) {
+          var quote = results[0];
+          var profile = results[1];
+          var watchlist = results[2];
+
+          renderQuote(quote);
+          renderProfile(profile);
+          renderWatchlistButton(watchlist);
+
+          document.getElementById("stockContent").style.display = "block";
+          loadChart(30);
+        })
+        .catch(function (error) {
+          pageErrorBox.textContent = error.message;
+          pageErrorBox.style.display = "block";
+        });
+    }
+
+    function renderQuote(quote) {
+      document.getElementById("priceText").textContent = "$" + quote.currentPrice.toFixed(2);
+
+      var changeEl = document.getElementById("changeText");
+      var sign = quote.change > 0 ? "+" : "";
+      changeEl.textContent = sign + quote.change.toFixed(2) + " (" + sign + quote.percentChange.toFixed(2) + "%) today";
+      changeEl.className = "change " + (quote.change > 0 ? "price-up" : quote.change < 0 ? "price-down" : "price-flat");
+    }
+
+    function renderProfile(profile) {
+      if (!profile) return;
+
+      document.getElementById("companyNameText").textContent = profile.companyName || "";
+
+      if (profile.logoUrl) {
+        var logo = document.getElementById("companyLogo");
+        logo.src = profile.logoUrl;
+        logo.style.display = "block";
+      }
+
+      document.getElementById("infoIndustry").textContent = profile.industry || "—";
+      document.getElementById("infoExchange").textContent = profile.exchange || "—";
+      document.getElementById("infoCurrency").textContent = profile.currency || "—";
+      document.getElementById("infoIpoDate").textContent = profile.ipoDate || "—";
+
+      if (profile.marketCapitalization) {
+        document.getElementById("infoMarketCap").textContent =
+          "$" + Number(profile.marketCapitalization).toLocaleString() + "M";
+      }
+
+      if (profile.website) {
+        var websiteEl = document.getElementById("infoWebsite");
+        websiteEl.innerHTML = '<a href="' + profile.website + '" target="_blank" rel="noopener">' + profile.website + "</a>";
+      }
+    }
+
+    function renderWatchlistButton(watchlist) {
+      var isWatched = watchlist.some(function (item) { return item.ticker === symbol; });
+      var btn = document.getElementById("watchlistToggleBtn");
+      btn.textContent = isWatched ? "Remove from watchlist" : "Add to watchlist";
+
+      btn.addEventListener("click", function () {
+        var request = isWatched
+          ? apiRequest("/watchlist/" + symbol, { method: "DELETE" })
+          : apiRequest("/watchlist", { method: "POST", body: { ticker: symbol } });
+
+        request
+          .then(function () {
+            isWatched = !isWatched;
+            btn.textContent = isWatched ? "Remove from watchlist" : "Add to watchlist";
+          })
+          .catch(function (error) {
+            pageErrorBox.textContent = error.message;
+            pageErrorBox.style.display = "block";
+          });
+      });
+    }
+
+    // --- Historical price chart, drawn by hand on a canvas ---------------------
+    var rangeButtons = document.querySelectorAll(".chart-range-buttons button");
+    for (var i = 0; i < rangeButtons.length; i++) {
+      rangeButtons[i].addEventListener("click", function (event) {
+        for (var j = 0; j < rangeButtons.length; j++) rangeButtons[j].classList.remove("active");
+        event.target.classList.add("active");
+        loadChart(Number(event.target.getAttribute("data-days")));
+      });
+    }
+
+    function loadChart(days) {
+      var chartMessage = document.getElementById("chartMessage");
+      var canvas = document.getElementById("priceChart");
+      chartMessage.style.display = "none";
+      canvas.style.display = "block";
+
+      apiRequest("/stocks/candles/" + symbol + "?days=" + days)
+        .then(function (data) {
+          drawChart(canvas, data.candles);
+        })
+        .catch(function (error) {
+          canvas.style.display = "none";
+          chartMessage.textContent = error.message;
+          chartMessage.style.display = "block";
+        });
+    }
+
+    function drawChart(canvas, candles) {
+      // Match the canvas's internal pixel size to how large it's actually
+      // displayed, so lines are crisp rather than stretched/blurry.
+      var displayWidth = canvas.clientWidth || 900;
+      var displayHeight = 260;
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+
+      var ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+      var paddingLeft = 55;
+      var paddingRight = 15;
+      var paddingTop = 15;
+      var paddingBottom = 30;
+      var plotWidth = displayWidth - paddingLeft - paddingRight;
+      var plotHeight = displayHeight - paddingTop - paddingBottom;
+
+      var closes = candles.map(function (c) { return c.close; });
+      var minPrice = Math.min.apply(null, closes);
+      var maxPrice = Math.max.apply(null, closes);
+      if (minPrice === maxPrice) { minPrice -= 1; maxPrice += 1; }
+      var priceRange = maxPrice - minPrice;
+
+      function xForIndex(index) {
+        return paddingLeft + (index / (candles.length - 1)) * plotWidth;
+      }
+      function yForPrice(price) {
+        return paddingTop + (1 - (price - minPrice) / priceRange) * plotHeight;
+      }
+
+      // Gridlines + price labels (4 horizontal bands)
+      ctx.strokeStyle = "#223049";
+      ctx.fillStyle = "#7c8caa";
+      ctx.font = "11px ui-monospace, monospace";
+      ctx.lineWidth = 1;
+
+      var gridLines = 4;
+      for (var g = 0; g <= gridLines; g++) {
+        var price = minPrice + (priceRange * g) / gridLines;
+        var y = yForPrice(price);
+        ctx.beginPath();
+        ctx.moveTo(paddingLeft, y);
+        ctx.lineTo(displayWidth - paddingRight, y);
+        ctx.stroke();
+        ctx.fillText("$" + price.toFixed(2), 4, y + 4);
+      }
+
+      // Date labels along the bottom (first, middle, last)
+      var labelIndices = [0, Math.floor((candles.length - 1) / 2), candles.length - 1];
+      for (var li = 0; li < labelIndices.length; li++) {
+        var idx = labelIndices[li];
+        var date = new Date(candles[idx].date * 1000);
+        var label = (date.getMonth() + 1) + "/" + date.getDate();
+        var x = xForIndex(idx);
+        ctx.fillText(label, Math.max(paddingLeft, Math.min(x - 12, displayWidth - 40)), displayHeight - 8);
+      }
+
+      // Price line
+      var isUpOverall = closes[closes.length - 1] >= closes[0];
+      ctx.strokeStyle = isUpOverall ? "#34d399" : "#f87171";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (var i2 = 0; i2 < candles.length; i2++) {
+        var x2 = xForIndex(i2);
+        var y2 = yForPrice(candles[i2].close);
+        if (i2 === 0) ctx.moveTo(x2, y2);
+        else ctx.lineTo(x2, y2);
+      }
+      ctx.stroke();
+
+      // Soft fill under the line
+      ctx.lineTo(xForIndex(candles.length - 1), paddingTop + plotHeight);
+      ctx.lineTo(xForIndex(0), paddingTop + plotHeight);
+      ctx.closePath();
+      ctx.fillStyle = isUpOverall ? "rgba(52, 211, 153, 0.08)" : "rgba(248, 113, 113, 0.08)";
+      ctx.fill();
+    }
+  </script>
+</body>
+</html>

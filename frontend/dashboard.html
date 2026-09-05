@@ -1,0 +1,283 @@
+<!--
+  Personal Stock Portfolio — Dashboard
+  Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
+
+  This page is fully self-contained: all of its logic lives in the
+  script block below. It does not import code from any other JavaScript
+  file — the only shared file across pages in this project is style.css.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard — Personal Stock Portfolio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <a href="dashboard.html">Personal Stock Portfolio</a>
+      </div>
+      <nav class="nav-links">
+        <a href="dashboard.html" class="active">Dashboard</a>
+        <a href="market.html">Market</a>
+        <a href="portfolio.html">Portfolio</a>
+        <a href="watchlist.html">Watchlist</a>
+        <a href="change-password.html">Change Password</a>
+        <a href="security-2fa.html">Security</a>
+      </nav>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="session-pill"><span class="dot"></span>Encrypted session</div>
+        <button class="btn btn-secondary btn-small" id="signOutBtn">Sign out</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="form-error" id="pageErrorBox" style="display:none;"></div>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Portfolio cost basis</div>
+          <div class="stat-value" id="statPortfolioValue">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Holdings</div>
+          <div class="stat-value" id="statHoldingsCount">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Watchlist</div>
+          <div class="stat-value" id="statWatchlistCount">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Investment notes</div>
+          <div class="stat-value" id="statNotesCount">—</div>
+        </div>
+      </div>
+
+      <div class="section-heading">
+        <h2>Stocks you're following</h2>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <span id="lastUpdatedLabel" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);"></span>
+          <a href="watchlist.html" style="font-size:12px;">Manage watchlist</a>
+        </div>
+      </div>
+      <div class="panel" id="watchlistPanel">
+        <div class="empty-state">Loading…</div>
+      </div>
+    </main>
+
+    <div class="footer-credit">Personal Stock Portfolio — © 2026 Anh Quang Nguyen. All rights reserved.</div>
+  </div>
+
+  <script>
+    var API_BASE = "http://localhost:4000/api";
+
+    function getAccessToken() { return localStorage.getItem("psp_access_token"); }
+    function getRefreshToken() { return localStorage.getItem("psp_refresh_token"); }
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem("psp_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("psp_refresh_token", refreshToken);
+    }
+    function clearTokens() {
+      localStorage.removeItem("psp_access_token");
+      localStorage.removeItem("psp_refresh_token");
+    }
+
+    if (!getAccessToken()) {
+      window.location.href = "login.html";
+    }
+
+    function apiRequest(path, options) {
+      options = options || {};
+      var headers = { "Content-Type": "application/json" };
+      headers["Authorization"] = "Bearer " + getAccessToken();
+
+      return fetch(API_BASE + path, {
+        method: options.method || "GET",
+        headers: headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      }).then(function (response) {
+        if (response.status === 401 && options.retry !== false) {
+          return tryRefreshToken().then(function (refreshed) {
+            if (refreshed) {
+              return apiRequest(path, Object.assign({}, options, { retry: false }));
+            }
+            return response.json().then(function (data) {
+              throw new Error(data.error || "Session expired. Please sign in again.");
+            });
+          });
+        }
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || "Request failed (" + response.status + ")");
+          return data;
+        });
+      });
+    }
+
+    var refreshPromise = null;
+
+    function tryRefreshToken() {
+      if (refreshPromise) return refreshPromise;
+
+      var refreshToken = getRefreshToken();
+      if (!refreshToken) return Promise.resolve(false);
+
+      refreshPromise = fetch(API_BASE + "/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: refreshToken }),
+      })
+        .then(function (response) {
+          if (!response.ok) return false;
+          return response.json().then(function (data) {
+            setTokens(data.accessToken, data.refreshToken);
+            return true;
+          });
+        })
+        .catch(function () { return false; })
+        .finally(function () { refreshPromise = null; });
+
+      return refreshPromise;
+    }
+
+    document.getElementById("signOutBtn").addEventListener("click", function () {
+      var refreshToken = getRefreshToken();
+      apiRequest("/auth/logout", { method: "POST", body: { refreshToken: refreshToken } })
+        .catch(function () {})
+        .finally(function () {
+          clearTokens();
+          window.location.href = "login.html";
+        });
+    });
+
+    // --- Stat cards --------------------------------------------------------
+    function loadStats() {
+      return Promise.all([
+        apiRequest("/holdings"),
+        apiRequest("/watchlist"),
+        apiRequest("/notes"),
+      ]).then(function (results) {
+        var holdings = results[0];
+        var watchlist = results[1];
+        var notes = results[2];
+
+        var totalCostBasis = 0;
+        for (var i = 0; i < holdings.length; i++) {
+          totalCostBasis += holdings[i].shares * holdings[i].costBasis;
+        }
+
+        document.getElementById("statPortfolioValue").textContent = "$" + totalCostBasis.toFixed(2);
+        document.getElementById("statHoldingsCount").textContent = holdings.length;
+        document.getElementById("statWatchlistCount").textContent = watchlist.length;
+        document.getElementById("statNotesCount").textContent = notes.length;
+
+        return watchlist;
+      });
+    }
+
+    // --- Followed stocks table with live price + daily change -------------------
+    var watchlistPanel = document.getElementById("watchlistPanel");
+    var pageErrorBox = document.getElementById("pageErrorBox");
+
+    function formatChange(quote) {
+      if (!quote || quote.error) {
+        return { priceText: "—", changeText: "unavailable", cssClass: "price-flat" };
+      }
+      var cssClass = "price-flat";
+      if (quote.change > 0) cssClass = "price-up";
+      else if (quote.change < 0) cssClass = "price-down";
+
+      var sign = quote.change > 0 ? "+" : "";
+      var changeText = sign + quote.change.toFixed(2) + " (" + sign + quote.percentChange.toFixed(2) + "%)";
+      return { priceText: "$" + quote.currentPrice.toFixed(2), changeText: changeText, cssClass: cssClass };
+    }
+
+    function renderWatchlistTable(items) {
+      if (items.length === 0) {
+        watchlistPanel.innerHTML =
+          '<div class="empty-state">You\'re not following any stocks yet. <a href="watchlist.html">Add one to your watchlist</a>.</div>';
+        return;
+      }
+
+      var rowsHtml = "";
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var display = formatChange(item.quote);
+        rowsHtml +=
+          "<tr>" +
+          '<td><a class="ticker" href="stock.html?symbol=' + item.ticker + '">' + item.ticker + "</a></td>" +
+          "<td>" + display.priceText + "</td>" +
+          '<td class="' + display.cssClass + '">' + display.changeText + "</td>" +
+          "</tr>";
+      }
+
+      watchlistPanel.innerHTML =
+        "<table>" +
+        "<thead><tr><th>Ticker</th><th>Price</th><th>Daily change</th></tr></thead>" +
+        "<tbody>" + rowsHtml + "</tbody>" +
+        "</table>";
+    }
+
+    function loadWatchlistWithQuotes(watchlistItems) {
+      var quotePromises = watchlistItems.map(function (item) {
+        return apiRequest("/stocks/quote/" + item.ticker)
+          .then(function (quote) { return quote; })
+          .catch(function (error) { return { error: error.message }; });
+      });
+
+      return Promise.all(quotePromises).then(function (quotes) {
+        var merged = watchlistItems.map(function (item, index) {
+          return { ticker: item.ticker, quote: quotes[index] };
+        });
+        renderWatchlistTable(merged);
+        document.getElementById("lastUpdatedLabel").textContent = "Updated " + new Date().toLocaleTimeString();
+      });
+    }
+
+    // --- Auto-refresh every 20 seconds, so prices stay genuinely live -----------
+    var REFRESH_INTERVAL_MS = 20000;
+    var currentWatchlist = [];
+    var refreshTimer = null;
+
+    function refreshCycle() {
+      loadWatchlistWithQuotes(currentWatchlist).catch(function (error) {
+        pageErrorBox.textContent = error.message;
+        pageErrorBox.style.display = "block";
+      });
+    }
+
+    function startAutoRefresh() {
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(refreshCycle, REFRESH_INTERVAL_MS);
+    }
+
+    // Pause polling on a hidden tab, resume (and refresh immediately) when
+    // it becomes visible again — avoids burning API quota in the background.
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        if (refreshTimer) clearInterval(refreshTimer);
+      } else {
+        refreshCycle();
+        startAutoRefresh();
+      }
+    });
+
+    // --- Initial load -----------------------------------------------------------
+    loadStats()
+      .then(function (watchlist) {
+        currentWatchlist = watchlist;
+        return loadWatchlistWithQuotes(watchlist);
+      })
+      .then(function () {
+        startAutoRefresh();
+      })
+      .catch(function (error) {
+        pageErrorBox.textContent = error.message;
+        pageErrorBox.style.display = "block";
+      });
+  </script>
+</body>
+</html>
