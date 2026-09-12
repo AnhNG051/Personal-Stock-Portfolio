@@ -1,13 +1,6 @@
 /*
  * Personal Stock Portfolio
  * Copyright (c) 2026 Anh Quang Nguyen. All rights reserved.
- *
- * Shared stylesheet for every page. This is the one file every page is
- * allowed to reference externally — all JavaScript logic is written
- * directly inside each page instead of being imported from elsewhere.
- *
- * Uses only the operating system's own installed fonts — no external
- * font files are downloaded, so this works fully offline.
  */
 
 :root {
